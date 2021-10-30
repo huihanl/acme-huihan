@@ -32,6 +32,7 @@ import sonnet as snt
 import tensorflow as tf
 import tree
 
+from rlkit.data_management.obs_dict_replay_buffer import ObsDictReplayBuffer
 
 class RCRRLearner(core.Learner):
   """Recurrent CRR learner.
@@ -45,7 +46,7 @@ class RCRRLearner(core.Learner):
                critic_network: networks.CriticDeepRNN,
                target_policy_network: snt.RNNCore,
                target_critic_network: networks.CriticDeepRNN,
-               dataset: tf.data.Dataset,
+               replay_buffer: ObsDictReplayBuffer,
                accelerator_strategy: Optional[tf.distribute.Strategy] = None,
                behavior_network: Optional[snt.Module] = None,
                cwp_network: Optional[snt.Module] = None,
@@ -125,8 +126,7 @@ class RCRRLearner(core.Learner):
     # the only way to get it is to sample from the dataset, since the dataset
     # does not have any metadata, see b/160672927 to track this upcoming
     # feature.
-    sample = next(dataset.as_numpy_iterator())
-    self._sequence_length = sample.action.shape[1]
+    self._sequence_length = 2 # hardcode for now
 
     self._counter = counter or counting.Counter()
     self._logger = logger or loggers.TerminalLogger('learner', time_delta=1.)
@@ -139,11 +139,6 @@ class RCRRLearner(core.Learner):
       # Necessary to track when to update target networks.
       self._num_steps = tf.Variable(0, dtype=tf.int32)
 
-      # (Maybe) distributing the dataset across multiple accelerators.
-      distributed_dataset = self._accelerator_strategy.experimental_distribute_dataset(
-          dataset)
-      self._iterator = iter(distributed_dataset)
-
       # Create the optimizers.
       self._critic_optimizer = critic_optimizer or snt.optimizers.Adam(1e-4)
       self._policy_optimizer = policy_optimizer or snt.optimizers.Adam(1e-4)
@@ -153,6 +148,8 @@ class RCRRLearner(core.Learner):
     self._critic_network = critic_network
     self._target_policy_network = target_policy_network
     self._target_critic_network = target_critic_network
+
+    self.replay_buffer = replay_buffer
 
     # Expose the variables.
     self._variables = {
@@ -194,13 +191,13 @@ class RCRRLearner(core.Learner):
     # Timestamp to keep track of the wall time.
     self._walltime_timestamp = time.time()
 
-  def _step(self, sample: reverb.ReplaySample) -> Dict[str, tf.Tensor]:
+  def _step(self, sample: dict) -> Dict[str, tf.Tensor]:
     # Transpose batch and sequence axes, i.e. [B, T, ...] to [T, B, ...].
-    sample = tf2_utils.batch_to_sequence(sample)
-    observations = sample.observation
-    actions = sample.action
-    rewards = sample.reward
-    discounts = sample.discount
+    #sample = tf2_utils.batch_to_sequence(sample)
+    observations = sample["observations"]
+    actions = sample["actions"]
+    rewards = sample["rewards"]
+    discounts = 1
 
     dtype = rewards.dtype
 
@@ -378,7 +375,7 @@ class RCRRLearner(core.Learner):
 
   @tf.function
   def _replicated_step(self) -> Dict[str, tf.Tensor]:
-    sample = next(self._iterator)
+    sample = self.replay_buffer.random_batch(batch_size=256) # hardcoded for now
     fetches = self._accelerator_strategy.run(self._step, args=(sample,))
     mean = tf.distribute.ReduceOp.MEAN
     return {
@@ -406,3 +403,13 @@ class RCRRLearner(core.Learner):
 
   def get_variables(self, names: List[str]) -> List[List[np.ndarray]]:
     return [tf2_utils.to_numpy(self._variables[name]) for name in names]
+
+
+def np_to_tf_batch(np_batch):
+    if isinstance(np_batch, dict):
+        return {
+            k: tf.convert_to_tensor(x, dtype=tf.float32)
+            for k, x in np_batch
+        }
+    else:
+        tf.convert_to_tensor(np_batch, dtype=tf.float32)
