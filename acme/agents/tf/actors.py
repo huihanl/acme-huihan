@@ -128,18 +128,20 @@ class RecurrentActor(core.Actor):
     self._prev_state = None
     self._store_recurrent_state = store_recurrent_state
 
-  @tf.function
+  #@tf.function
   def _policy(
       self,
       observation: types.NestedTensor,
       state: types.NestedTensor,
   ) -> Tuple[types.NestedTensor, types.NestedTensor]:
 
+    import pdb; pdb.set_trace()
     # Add a dummy batch dimension and as a side effect convert numpy to TF.
-    batched_observation = tf2_utils.add_batch_dim(observation)
+    #batched_observation = {"state": tf2_utils.add_batch_dim(observation["state"])}
 
     # Compute the policy, conditioned on the observation.
-    policy, new_state = self._network(batched_observation, state)
+    #policy, new_state = self._network(batched_observation, state)
+    policy = self._network(observation, state)
 
     # Sample from the policy if it is stochastic.
     action = policy.sample() if isinstance(policy, tfd.Distribution) else policy

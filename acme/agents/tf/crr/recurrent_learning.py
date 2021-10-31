@@ -172,7 +172,9 @@ class RCRRLearner(core.Learner):
               'critic_optimizer': self._critic_optimizer,
               'num_steps': self._num_steps,
           },
-          time_delta_minutes=30.)
+          time_delta_minutes=10.,
+          directory="/mnt/data0/huihanl/acme_results",
+          max_to_keep=None)
 
       raw_policy = snt.DeepRNN(
           [policy_network, networks.StochasticSamplingHead()])
@@ -197,12 +199,17 @@ class RCRRLearner(core.Learner):
     observations = sample["observations"]
     actions = sample["actions"]
     rewards = sample["rewards"]
-    discounts = 1
-
+    next_obs = sample["next_observations"]
+    print("observations: ")
+    print(observations)
+    print("actions")
+    print(actions)
+    
+    discounts = tf.convert_to_tensor([1.] * actions.shape[0])
     dtype = rewards.dtype
 
     # Cast the additional discount to match the environment discount dtype.
-    discount = tf.cast(self._discount, dtype=discounts.dtype)
+    discount = tf.convert_to_tensor(self._discount, dtype=tf.float32) #tf.cast(self._discount, dtype=float)
 
     # Loss cumulants across time. These cannot be python mutable objects.
     critic_loss = 0.
@@ -224,11 +231,16 @@ class RCRRLearner(core.Learner):
 
     with tf.GradientTape(persistent=True) as tape:
       for t in range(1, self._sequence_length):
-        o_tm1 = tree.map_structure(operator.itemgetter(t - 1), observations)
-        a_tm1 = tree.map_structure(operator.itemgetter(t - 1), actions)
-        r_t = tree.map_structure(operator.itemgetter(t - 1), rewards)
-        d_t = tree.map_structure(operator.itemgetter(t - 1), discounts)
-        o_t = tree.map_structure(operator.itemgetter(t), observations)
+        o_tm1 = observations #tree.map_structure(operator.itemgetter(t - 1), observations)
+        a_tm1 = actions #tree.map_structure(operator.itemgetter(t - 1), actions)
+        r_t = rewards #tree.map_structure(operator.itemgetter(t - 1), rewards)
+        #d_t = tree.map_structure(operator.itemgetter(t - 1), discounts)
+        o_t = next_obs #tree.map_structure(operator.itemgetter(t), observations)
+        print("o_tm1")
+        print(o_tm1)
+        print("a_tm1")
+        print(a_tm1)
+        print(o_t)
 
         if t != 1:
           # By only updating the target critic state here we are forcing
@@ -269,7 +281,7 @@ class RCRRLearner(core.Learner):
         # Construct the expected distributional value for bootstrapping.
         q_t = networks.DiscreteValuedDistribution(
             values=sampled_q_t.values, logits=averaged_logits)
-        critic_loss_t = losses.categorical(q_tm1, r_t, discount * d_t, q_t)
+        critic_loss_t = losses.categorical(q_tm1, r_t, discount, q_t)
         critic_loss_t = tf.reduce_mean(critic_loss_t)
 
         # ========================= Actor learning =============================
@@ -376,6 +388,9 @@ class RCRRLearner(core.Learner):
   @tf.function
   def _replicated_step(self) -> Dict[str, tf.Tensor]:
     sample = self.replay_buffer.random_batch(batch_size=256) # hardcoded for now
+    sample = np_to_tf_batch(sample)
+    print("converted sample: ")
+    print(sample)
     fetches = self._accelerator_strategy.run(self._step, args=(sample,))
     mean = tf.distribute.ReduceOp.MEAN
     return {
@@ -408,8 +423,8 @@ class RCRRLearner(core.Learner):
 def np_to_tf_batch(np_batch):
     if isinstance(np_batch, dict):
         return {
-            k: tf.convert_to_tensor(x, dtype=tf.float32)
-            for k, x in np_batch
+                k: np_to_tf_batch(x)
+            for k, x in np_batch.items()
         }
     else:
-        tf.convert_to_tensor(np_batch, dtype=tf.float32)
+        return tf.convert_to_tensor(np_batch, dtype=tf.float32)

@@ -209,10 +209,11 @@ class EnvironmentLoopRM(core.Worker):
       An instance of `loggers.LoggingData`.
     """
     obs = self._environment.reset()
+    import pdb; pdb.set_trace()
 
     success = 0
     # Run an episode.
-    for _ in self.max_steps:
+    for _ in range(self.max_steps):
       # Generate an action from the agent's policy and step the environment.
       action = self._actor.select_action(observation=obs)
       self._environment.step(action)
@@ -232,7 +233,7 @@ class EnvironmentLoopRM(core.Worker):
   def run(self, num_trials, max_steps):
     self.max_steps = max_steps
     total_success = 0
-    for _ in num_trials:
+    for _ in range(num_trials):
       success = self.run_episode()
       total_success += success
       # Log the given results.
