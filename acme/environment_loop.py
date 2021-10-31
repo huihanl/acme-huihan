@@ -162,6 +162,85 @@ class EnvironmentLoop(core.Worker):
       self._logger.write(result)
 
 
+class EnvironmentLoopRM(core.Worker):
+  """A simple RL environment loop.
+
+  This takes `Environment` and `Actor` instances and coordinates their
+  interaction. Agent is updated if `should_update=True`. This can be used as:
+
+    loop = EnvironmentLoop(environment, actor)
+    loop.run(num_episodes)
+
+  A `Counter` instance can optionally be given in order to maintain counts
+  between different Acme components. If not given a local Counter will be
+  created to maintain counts between calls to the `run` method.
+
+  A `Logger` instance can also be passed in order to control the output of the
+  loop. If not given a platform-specific default logger will be used as defined
+  by utils.loggers.make_default_logger. A string `label` can be passed to easily
+  change the label associated with the default logger; this is ignored if a
+  `Logger` instance is given.
+  """
+
+  def __init__(
+          self,
+          environment,
+          actor: core.Actor,
+          counter: Optional[counting.Counter] = None,
+          logger: Optional[loggers.Logger] = None,
+          should_update: bool = True,
+          label: str = 'environment_loop',
+  ):
+    # Internalize agent and environment.
+    self._environment = environment
+    self._actor = actor
+    self._counter = counter or counting.Counter()
+    self._logger = logger or loggers.make_default_logger(label)
+    self._should_update = should_update
+
+  def run_episode(self) -> loggers.LoggingData:
+    """Run one episode.
+
+    Each episode is a loop which interacts first with the environment to get an
+    observation and then give that observation to the agent in order to retrieve
+    an action.
+
+    Returns:
+      An instance of `loggers.LoggingData`.
+    """
+    obs = self._environment.reset()
+
+    success = 0
+    # Run an episode.
+    for _ in self.max_steps:
+      # Generate an action from the agent's policy and step the environment.
+      action = self._actor.select_action(observation=obs)
+      self._environment.step(action)
+
+      if self._should_update:
+        self._actor.update()
+
+      if env.is_success()["task"]:
+        success = 1
+        break
+
+    result = {
+      'success': success
+    }
+    return result
+
+  def run(self, num_trials, max_steps):
+    self.max_steps = max_steps
+    total_success = 0
+    for _ in num_trials:
+      success = self.run_episode()
+      total_success += success
+      # Log the given results.
+      self._logger.write(success)
+    success_rate = {"success rate": total_success / num_trials}
+    self._logger.write(success_rate)
+
+
 def _generate_zeros_from_spec(spec: specs.Array) -> np.ndarray:
   return np.zeros(spec.shape, spec.dtype)
 
